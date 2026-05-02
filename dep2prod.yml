@@ -81,8 +81,6 @@ jobs:
 
             cd ${{ env.DEPLOY_PATH }}
 
-            set -e
-
             docker pull $IMAGE_URI
 
             docker stop app-green || true
@@ -106,12 +104,11 @@ jobs:
             fi
 
             echo "GREEN is healthy. Switching traffic..."
-
+            docker stop app-green
+            docker rm app-green
+            
             # Backup current blue state before replacing
-            docker rename app-blue app-blue-old || true
-
-            # Promote green to blue
-            docker rename app-green app-blue
+            docker rename app-blue app-blue-old || true 
 
             echo "Starting BLUE on production port..."
             docker run -d \
@@ -132,17 +129,12 @@ jobs:
               # Restore old version
               docker rename app-blue-old app-blue
 
-              docker run -d \
-                --name app-blue \
-                -p 8080:8080 \
-                --env DB_URL=$DB_URL \
-                $IMAGE_URI
-
+              docker start app-blue
+              
                 exit 1
             fi
 
             echo "Cleaning up old version..."
             docker stop app-blue-old || true
-            docker rm app-blue-old || true
 
             echo "Deployment successful with zero-downtime + rollback protection"
