@@ -1,0 +1,57 @@
+name: deploy to EC2 production server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force docker rebuild or not"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DEPLOY_PATH: /opt/app
+  EC2_USER: ${{ vars.EC2_USER }}
+  EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
+
+jobs:
+  build-push:
+    name: build and push image
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.export.outputs.image_uri }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS-REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+      - name: login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: setup docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/your-repo:${{ github.sha }}
+          no-cache: ${{ inputs.force_rebuild }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: export image uri
+        id: export
+        run: |
+          echo "image_uri=${{ steps.ecr-login.outputs.registry }}/your-repo:${{ github.sha }}" \
+          >> "$GITHUB_OUTPUT"
