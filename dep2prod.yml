@@ -109,6 +109,7 @@ jobs:
             
             # Backup current blue state before replacing
             docker rename app-blue app-blue-old || true 
+            docker stop app-blue-old || true
 
             echo "Starting BLUE on production port..."
             docker run -d \
@@ -133,8 +134,5 @@ jobs:
               
                 exit 1
             fi
-
-            echo "Cleaning up old version..."
-            docker stop app-blue-old || true
 
             echo "Deployment successful with zero-downtime + rollback protection"
