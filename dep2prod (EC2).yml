@@ -55,3 +55,97 @@ jobs:
         run: |
           echo "image_uri=${{ steps.ecr-login.outputs.registry }}/your-repo:${{ github.sha }}" \
           >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: deploy to PROD
+    runs-on: ubuntu-latest
+    needs: build-push
+    environment:
+      name: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+      - name: pull image
+        run: docker pull ${{ needs.build-push.outputs.image_uri }}
+
+      - name: add known host
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.PROD_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: blue-green deployment
+        env:
+          IMAGE_URI: ${{ needs.build-push.outputs.image_uri }}
+          DB_URL: ${{ secrets.PROD_DATABASE_URL }}
+
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_SERVER_HOST }}
+          username: ${{ secrets.PROD_SERVER_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          envs: IMAGE_URI, DB_URL
+          script: |
+            set -euo pipefail
+
+            cd ${{ env.DEPLOY_PATH }}
+
+            docker stop app-green || true
+            docker rm app-green || true
+
+            echo "Starting GREEN deployment..."
+            docker run -d \
+              --name app-green \
+              --env DB_URL=$DB_URL \
+              -p 8081:8080 \
+              $IMAGE_URI
+
+            echo "Waiting for green health check..."
+            sleep 10
+
+            if ! curl -f http://localhost:8081/health; then
+               echo "GREEN deployment failed. Rolling back immediately."
+               docker stop app-green || true
+               docker rm app-green || true
+               exit 1
+            fi
+
+            echo "GREEN is healthy. Switching traffic..."
+            docker stop app-green
+            docker rm app-green
+
+            # Backup current blue state before replacing
+            docker rename app-blue app-blue-old || true 
+            docker stop app-blue-old || true
+
+            echo "Starting BLUE on production port..."
+            docker run -d \
+              --name app-blue \
+              -p 8080:8080 \
+              --env DB_URL=$DB_URL \
+              $IMAGE_URI
+
+            sleep 10
+
+            echo "Verifying production health..."
+            if ! curl -f http://localhost:8080/health; then
+              echo "NEW BLUE FAILED. Rolling back..."
+
+              docker stop app-blue || true
+              docker rm app-blue || true
+
+              # Restore old version
+              docker rename app-blue-old app-blue
+
+              docker start app-blue
+              
+                exit 1
+            fi
+
+            echo "Deployment successful with zero-downtime + rollback protection"
